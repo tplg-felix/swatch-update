@@ -33,9 +33,24 @@ STORES = {
     },
 }
 
-PRODUCT_QUERY = """
+PRODUCT_BY_HANDLE_QUERY = """
 query ProductByHandle($handle: String!) {
   productByIdentifier(identifier: {handle: $handle}) {
+    id
+    handle
+    options {
+      id
+      name
+      linkedMetafield { namespace key }
+      optionValues { id name linkedMetafieldValue }
+    }
+  }
+}
+"""
+
+PRODUCT_BY_ID_QUERY = """
+query ProductById($id: ID!) {
+  product(id: $id) {
     id
     handle
     options {
@@ -122,6 +137,13 @@ def download_workbook(url: str, destination: Path) -> None:
         raise RuntimeError("Downloaded file is not an Excel workbook.")
 
 
+def header_column(headers: dict[str, int], *aliases: str) -> int | None:
+    for alias in aliases:
+        if alias in headers:
+            return headers[alias]
+    return None
+
+
 def matrixify_rows(workbook_path: Path) -> list[dict[str, str]]:
     workbook = load_workbook(workbook_path, read_only=True, data_only=False)
     worksheet = workbook["Product"] if "Product" in workbook.sheetnames else workbook["Products"]
@@ -130,24 +152,39 @@ def matrixify_rows(workbook_path: Path) -> list[dict[str, str]]:
         for column in range(1, worksheet.max_column + 1)
         if text(worksheet.cell(1, column).value)
     }
-    required = {"Handle", "Option 1 Name", "Option 1 Value"}
-    missing = sorted(required.difference(headers))
-    if missing:
-        raise RuntimeError("Missing Matrixify column(s): " + ", ".join(missing))
+    option_name_column = header_column(headers, "Option 1 Name", "Option1 Name")
+    option_value_column = header_column(headers, "Option 1 Value", "Option1 Value")
+    handle_column = header_column(headers, "Handle")
+    id_column = header_column(headers, "ID")
+    if not option_name_column or not option_value_column or not (handle_column or id_column):
+        raise RuntimeError(
+            "Need Option1 Name (or Option 1 Name), Option1 Value (or Option 1 Value), "
+            "and either Handle or ID."
+        )
 
     rows: list[dict[str, str]] = []
+    previous_reference_type = ""
+    previous_reference_value = ""
     for source_row in range(2, worksheet.max_row + 1):
-        option_name = text(worksheet.cell(source_row, headers["Option 1 Name"]).value)
-        option_value = text(worksheet.cell(source_row, headers["Option 1 Value"]).value)
-        if option_name.casefold() != "color" or "/" not in option_value:
+        handle = text(worksheet.cell(source_row, handle_column).value) if handle_column else ""
+        product_id = text(worksheet.cell(source_row, id_column).value) if id_column else ""
+        if handle:
+            previous_reference_type, previous_reference_value = "handle", handle
+        elif product_id:
+            previous_reference_type, previous_reference_value = "id", product_id
+
+        option_name = text(worksheet.cell(source_row, option_name_column).value)
+        option_value = text(worksheet.cell(source_row, option_value_column).value)
+        if "/" not in option_value:
             continue
-        product_handle = text(worksheet.cell(source_row, headers["Handle"]).value)
-        if not product_handle:
-            raise RuntimeError(f"Excel row {source_row} needs a Product Handle.")
+        if not previous_reference_value:
+            raise RuntimeError(f"Excel row {source_row} needs a product Handle or ID.")
+
         rows.append(
             {
                 "source_excel_row": str(source_row),
-                "product_handle": product_handle,
+                "product_reference_type": previous_reference_type,
+                "product_reference": previous_reference_value,
                 "option_name": option_name,
                 "option_value": option_value,
                 "metaobject_handle": handle_from_label(option_value),
@@ -155,7 +192,7 @@ def matrixify_rows(workbook_path: Path) -> list[dict[str, str]]:
         )
 
     if not rows:
-        raise RuntimeError("No slash-containing Color option values were found.")
+        raise RuntimeError("No slash-containing Option1 Value values were found.")
     return rows
 
 
@@ -202,8 +239,13 @@ class Shopify:
             raise RuntimeError("Shopify GraphQL request failed: " + str(payload))
         return payload.get("data") or {}
 
-    def product(self, handle: str) -> dict[str, Any] | None:
-        return self.graphql(PRODUCT_QUERY, {"handle": handle}).get("productByIdentifier")
+    def product(self, reference_type: str, reference: str) -> dict[str, Any] | None:
+        if reference_type == "handle":
+            return self.graphql(PRODUCT_BY_HANDLE_QUERY, {"handle": reference}).get(
+                "productByIdentifier"
+            )
+        product_id = reference if reference.startswith("gid://") else f"gid://shopify/Product/{reference}"
+        return self.graphql(PRODUCT_BY_ID_QUERY, {"id": product_id}).get("product")
 
     def metaobject(self, handle: str) -> dict[str, Any] | None:
         if handle not in self.metaobject_cache:
@@ -246,14 +288,14 @@ def result(row: dict[str, str], status: str, detail: str, **ids: str) -> dict[st
 
 
 def link(rows: list[dict[str, str]], shopify: Shopify, execute: bool) -> list[dict[str, str]]:
-    grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
-        grouped[(row["product_handle"], row["option_name"])].append(row)
+        grouped[(row["product_reference_type"], row["product_reference"], row["option_name"])].append(row)
 
     results: list[dict[str, str]] = []
-    for (product_handle, option_name), group in grouped.items():
+    for (reference_type, reference, option_name), group in grouped.items():
         try:
-            product = shopify.product(product_handle)
+            product = shopify.product(reference_type, reference)
         except RuntimeError as exc:
             results.extend(result(row, "ERROR", str(exc)) for row in group)
             continue
@@ -377,7 +419,8 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
         "source_excel_row",
-        "product_handle",
+        "product_reference_type",
+        "product_reference",
         "option_name",
         "option_value",
         "metaobject_handle",
