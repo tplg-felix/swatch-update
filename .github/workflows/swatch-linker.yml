@@ -5,10 +5,19 @@ on:
   workflow_dispatch:
     inputs:
       store:
-        description: Store key from STORES in swatch_linker.py
+        description: Choose the target Shopify store
         required: true
         default: intl
-        type: string
+        type: choice
+        options:
+          - intl
+          - hk
+          - tw
+          - jp
+          - eu
+          - us
+          - kr
+          - th
       matrixify_download_url:
         description: Matrixify direct-download URL for the .xlsx export
         required: true
@@ -21,10 +30,6 @@ on:
         options:
           - dry-run
           - execute
-      confirm:
-        description: Required for execute mode; type APPLY_COLOR_PATTERN_LINKS exactly
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -47,8 +52,7 @@ jobs:
           python swatch_linker.py \
             --store "${{ inputs.store }}" \
             --url "${{ inputs.matrixify_download_url }}" \
-            --mode "${{ inputs.mode }}" \
-            --confirm "${{ inputs.confirm }}"
+            --mode "${{ inputs.mode }}"
 
       - if: ${{ always() }}
         uses: actions/upload-artifact@v4
