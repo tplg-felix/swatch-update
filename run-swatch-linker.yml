@@ -1,0 +1,68 @@
+---
+name: Run Shopify Swatch Linker
+
+on:
+  workflow_dispatch:
+    inputs:
+      matrixify_download_url:
+        description: Matrixify direct-download URL for the prepared .xlsx export
+        required: true
+        type: string
+      mode:
+        description: Start with Dry run. Choose Execute only after reviewing a clean report.
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - execute
+      live_confirmation:
+        description: Required only for Execute mode; type APPLY_COLOR_PATTERN_LINKS exactly
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  link-color-patterns:
+    name: Link Matrixify colors to Color & pattern entries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MATRIXIFY_DOWNLOAD_URL: ${{ inputs.matrixify_download_url }}
+      SHOPIFY_SHOP_DOMAIN: ${{ secrets.SHOPIFY_SHOP_DOMAIN }}
+      SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
+      SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+      SHOPIFY_API_VERSION: 2026-07
+
+    steps:
+      - name: Check out the workflow code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the swatch linker
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Run Matrixify-to-Shopify linking
+        run: |
+          python -m swatch_update.github_action \
+            --mode "${{ inputs.mode }}" \
+            --confirmation "${{ inputs.live_confirmation }}"
+
+      - name: Upload reviewed manifest and execution report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: swatch-linker-report-${{ github.run_id }}
+          path: |
+            output/
+            reports/
+          if-no-files-found: warn
+          retention-days: 7
