@@ -20,17 +20,24 @@ API_VERSION = "2026-07"
 METAOBJECT_TYPE = "shopify--color-pattern"
 LINKED_NAMESPACE = "shopify"
 LINKED_KEY = "color-pattern"
-CONFIRM_TEXT = "APPLY_COLOR_PATTERN_LINKS"
 MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024
 
-# Add another store by copying the "intl" block and using a new short key.
-# The GitHub Run workflow "store" input must equal one of these keys.
+# All configured stores use the same Shopify app credentials.
+SHARED_APP = {
+    "client_id": "b850c1d033f621b91b9cc45dd96dc137",
+    "client_secret": "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",
+}
+
+# The GitHub Run workflow "store" dropdown uses these keys.
 STORES = {
-    "intl": {
-        "shop": "intl-topologie.myshopify.com",
-        "client_id": "b850c1d033f621b91b9cc45dd96dc137",
-        "client_secret": "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",
-    },
+    "intl": {"shop": "intl-topologie.myshopify.com", **SHARED_APP},
+    "hk": {"shop": "theunitstoretw.myshopify.com", **SHARED_APP},
+    "tw": {"shop": "wholesale-topologie.myshopify.com", **SHARED_APP},
+    "jp": {"shop": "topologiejp.myshopify.com", **SHARED_APP},
+    "eu": {"shop": "eu-topologie.myshopify.com", **SHARED_APP},
+    "us": {"shop": "topologie-us-web.myshopify.com", **SHARED_APP},
+    "kr": {"shop": "topologie-korea.myshopify.com", **SHARED_APP},
+    "th": {"shop": "thai-topologie.myshopify.com", **SHARED_APP},
 }
 
 PRODUCT_BY_HANDLE_QUERY = """
@@ -442,12 +449,7 @@ def main() -> int:
     parser.add_argument("--store", default="intl")
     parser.add_argument("--url", required=True)
     parser.add_argument("--mode", choices=("dry-run", "execute"), default="dry-run")
-    parser.add_argument("--confirm", default="")
     args = parser.parse_args()
-
-    if args.mode == "execute" and args.confirm != CONFIRM_TEXT:
-        print(f"ERROR: type {CONFIRM_TEXT} exactly for execute mode.", file=sys.stderr)
-        return 2
 
     try:
         store = configured_store(args.store)
