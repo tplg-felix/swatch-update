@@ -1,147 +1,66 @@
 # Shopify Swatch Update
 
-`shopify-swatch-linker` is a small, manually triggered Python application for a specific Shopify and Matrixify workflow. It preserves a customer-facing variant label such as `Ivy Green / Vintage Ripstop`, derives the intended Color & pattern handle `ivy-green-vintage-ripstop`, and explicitly links the existing Color option value to the matching `shopify--color-pattern` metaobject.
+This repository gives you a **GitHub Actions button** to link Matrixify-imported Color option values to Shopify Color & pattern metaobjects. Its normal use is browser-based: paste a Matrixify download link, run a dry run, review the downloadable report, and then run an explicitly confirmed live update.
 
-The tool is designed for values that contain `/` and therefore cannot safely rely on Shopify’s convenience matching between a display label and a metaobject handle. It does not alter Matrixify labels, product titles, SKUs, or ordinary variant metafields.
+For example, it keeps the visible variant label `Ivy Green / Vintage Ripstop` while explicitly connecting that existing value to the `shopify--color-pattern` entry with handle `ivy-green-vintage-ripstop`.
 
-> Shopify currently labels the linked-product-option input used by this workflow as **early access**. Use the dry run first, then test the first live update on one non-critical or duplicate product before applying a full seasonal batch. [6]
+> **Before the first real run, make this repository private.** A Matrixify external-download link can expose a workbook, and GitHub workflow logs and artifacts are accessible to people with repository read access. [1] [2]
 
-## Workflow
+## Normal operation
 
-| Stage | What happens | Does it modify Shopify? |
-|---|---|---:|
-| Build manifest | Read the Matrixify workbook and generate an audited list of slash-containing Color values plus expected metaobject handles. | No |
-| Matrixify import | Create or update products and variants through the normal Matrixify workflow. | Yes, by Matrixify |
-| Dry run | Resolve products, Color option values, and Color & pattern metaobjects; write a result report. | No |
-| Live execution | Update only reviewed option values with explicit metaobject references. | Yes, only with `--execute` and the required confirmation text |
-
-## Prerequisites
-
-You need Python 3.11 or later, a Matrixify `.xlsx` or `.xlsm` export, and a Shopify Dev Dashboard app that is installed on the target store. Shopify’s current Dev Dashboard flow uses a Client ID and Client secret to request short-lived access tokens for a store you own; those tokens are not copied from the Shopify Admin UI. [1] [2]
-
-The Shopify app needs only the following Admin API scopes.
-
-| Scope | Reason |
+| Step | What you do |
 |---|---|
-| `read_products` | Read the imported product, its Color option, and its existing option-value IDs. The underlying product lookup requires this scope. [3] |
-| `write_products` | Explicitly update existing Color option values. The underlying `productOptionUpdate` mutation requires this scope. [4] |
-| `read_metaobjects` | Resolve the `shopify--color-pattern` entry by its type and handle. [5] |
+| 1 | Complete the Matrixify job and copy its direct **Download Exported File** link. |
+| 2 | In GitHub, open **Actions → Run Shopify Swatch Linker → Run workflow**. |
+| 3 | Paste the link, select `dry-run`, and run the workflow. |
+| 4 | Download the `swatch-linker-report` artifact and resolve any `ERROR` or `SKIPPED` rows. |
+| 5 | Run it again with `execute` and type `APPLY_COLOR_PATTERN_LINKS` only after the dry run is clean. |
 
-Follow the complete [Shopify custom-app setup guide](docs/SHOPIFY_CUSTOM_APP_SETUP.md) before running a Shopify command.
+The complete one-time setup and the exact button clicks are in **[docs/GITHUB_ACTIONS_SETUP.md](docs/GITHUB_ACTIONS_SETUP.md)**. Before the button appears, complete the one-time workflow-file addition described there.
 
-## Local installation
+## What the workflow does
 
-Clone the repository, create an isolated environment, and install the application in editable mode.
+The workflow downloads the Matrixify `.xlsx` file from the direct link, generates a manifest for Color option values that contain `/`, resolves each expected `shopify--color-pattern` metaobject by its handle, and updates only the existing matching option values. It never changes customer-facing option labels, product titles, SKUs, or ordinary variant metafields.
 
-```bash
-git clone https://github.com/tplg-felix/swatch-update.git
-cd swatch-update
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install -e ".[dev]"
-```
+| Run mode | Shopify changes | Safety behavior |
+|---|---:|---|
+| `dry-run` | No | Validates products, option values, and target metaobjects; provides a report artifact. |
+| `execute` | Yes | Requires the exact `APPLY_COLOR_PATTERN_LINKS` confirmation text and stops a product’s Color update if any linked value fails validation. |
 
-Create the local credentials file. The `.gitignore` file excludes `.env`, so it must remain only on your computer.
+The workflow publishes its manifest and result CSV as a GitHub Actions artifact so you can download it from the run summary. GitHub documents workflow artifacts as the standard way to retain generated output from a workflow run. [3]
 
-```bash
-cp .env.example .env
-```
+## Required one-time configuration
 
-Set the permanent Shopify domain and the Dev Dashboard credentials in `.env`.
+The GitHub workflow needs three repository secrets and a Shopify Dev Dashboard app installed on the target store.
 
-```dotenv
-SHOPIFY_SHOP_DOMAIN=your-store.myshopify.com
-SHOPIFY_CLIENT_ID=replace_with_your_client_id
-SHOPIFY_CLIENT_SECRET=replace_with_your_client_secret
-SHOPIFY_API_VERSION=2026-07
-```
+| GitHub repository secret | Value |
+|---|---|
+| `SHOPIFY_SHOP_DOMAIN` | Your permanent `your-store.myshopify.com` domain. |
+| `SHOPIFY_CLIENT_ID` | Shopify Dev Dashboard app Client ID. |
+| `SHOPIFY_CLIENT_SECRET` | Shopify Dev Dashboard app Client secret. |
 
-> Never commit `.env`, client secrets, access tokens, Matrixify exports, or result reports. Shopify explicitly advises storing the Client secret in a `.env` file and excluding it from version control. [2]
+The custom app needs `read_products`, `write_products`, and `read_metaobjects`. Configure secrets under **Settings → Secrets and variables → Actions**; do not put them in the workflow form or commit them to the repository. [4] [5]
 
-## Runbook for each Matrixify upload
+## Important compatibility note
 
-### 1. Generate the manifest before importing products
+Shopify currently marks the linked-product-option input used by this workflow as **early access**. Use the first live execution on a non-critical or duplicate product, review its report, and only then run a larger batch. [6]
 
-Place the Matrixify source workbook outside the repository or in the ignored `input/` folder. The command reads the `Product` worksheet without modifying it. It selects rows where `Option 1 Name` is `Color` and `Option 1 Value` contains `/`.
+## Development files
 
-```bash
-swatch-linker build-manifest \
-  input/INTLwebFW26newlisting.xlsx \
-  --manifest output/color_pattern_link_manifest.csv \
-  --preflight output/color_pattern_metaobject_preflight.csv
-```
-
-The command produces two CSV files. The manifest contains one expected reference per affected Matrixify row. The preflight file collapses this to one row per distinct `shopify--color-pattern` handle so that you can confirm the required metaobjects exist before importing the products.
-
-### 2. Import the original Matrixify `Product` worksheet normally
-
-Do not replace a visible option value such as `Ivy Green / Vintage Ripstop` with `ivy-green-vintage-ripstop`. The first is the display label; the second is a stable metaobject identity. The application deliberately keeps those roles separate.
-
-### 3. Run the no-write dry run
-
-Run this only after Matrixify has completed. It makes read-only GraphQL requests, checks each product, confirms the Color option and its value exist, resolves the target metaobject handle, and writes a timestamped report in `reports/`.
-
-```bash
-swatch-linker link \
-  --manifest output/color_pattern_link_manifest.csv \
-  --output-dir reports
-```
-
-Review the result report before proceeding. A clean first pass should mainly contain `WOULD_LINK` or `ALREADY_LINKED` values.
-
-| Status | Meaning | Required response |
-|---|---|---|
-| `WOULD_LINK` | The no-write validation found a valid product, option value, and target metaobject. | Review it, then it is eligible for live execution. |
-| `ALREADY_LINKED` | The imported option value is already connected to the expected metaobject. | No action is needed. |
-| `ERROR` | A product, option, option value, handle, scope, or Shopify configuration requirement was not satisfied. | Correct the issue, regenerate or revise the manifest, and rerun the dry run. |
-| `SKIPPED` | Another value in the same product’s Color option failed validation. The tool intentionally refuses a partial option update. | Resolve the associated `ERROR` first. |
-
-### 4. Apply reviewed links
-
-Proceed only when the dry-run report contains no `ERROR` or `SKIPPED` rows. The explicit confirmation string is a deliberate safeguard against accidental writes.
-
-```bash
-swatch-linker link \
-  --manifest output/color_pattern_link_manifest.csv \
-  --output-dir reports \
-  --execute \
-  --confirm APPLY_COLOR_PATTERN_LINKS
-```
-
-The live command uses Shopify’s `productOptionUpdate` mutation to write the `linkedMetafieldValue` reference. The product option is linked to `shopify.color-pattern` only if it is currently unlinked; the tool stops rather than overriding a differently linked option. [4]
-
-## Behavior and safeguards
-
-The tool follows a **validate first, mutate second** model. It never sends a mutation unless both `--execute` and the exact confirmation text are present. It resolves a real metaobject GID from the expected handle before updating the option value. Metaobject handles are unique within a type, which makes `shopify--color-pattern` plus a handle the appropriate stable lookup key. [5]
-
-A live update is all-or-nothing for each product’s Color option. If one candidate value on that product has an error, the tool skips the other pending values for the same option. Existing links that already match the intended target are left unchanged. A Color option that is already linked to another metafield is treated as an error and is never overwritten automatically.
-
-## Development checks
-
-Run the test suite and lint checks before committing repository changes.
-
-```bash
-pytest
-ruff check .
-```
-
-## Project structure
+The underlying Python package is retained for testing and future maintenance, but you do not need to run Python locally during normal operation. The only manual GitHub file addition is the one-time copy of [`docs/run-swatch-linker.yml`](docs/run-swatch-linker.yml) into `.github/workflows/run-swatch-linker.yml`.
 
 | Path | Purpose |
 |---|---|
-| `src/swatch_update/manifest.py` | Reads Matrixify workbooks and produces manifest and preflight CSVs. |
-| `src/swatch_update/shopify.py` | Handles Dev Dashboard client-credentials token exchange and Shopify GraphQL requests. |
-| `src/swatch_update/linker.py` | Validates and applies explicit metaobject links with per-product safety boundaries. |
-| `src/swatch_update/cli.py` | Provides the `swatch-linker` commands. |
-| `docs/SHOPIFY_CUSTOM_APP_SETUP.md` | Step-by-step Shopify setup guide. |
-| `tests/` | Unit tests for handle derivation, manifest generation, and write safeguards. |
+| `docs/run-swatch-linker.yml` | The ready-to-copy template for the manual **Run workflow** button. |
+| `src/swatch_update/github_action.py` | Downloads the Matrixify workbook, builds the manifest, and runs the safe linker. |
+| `docs/GITHUB_ACTIONS_SETUP.md` | One-time setup and exact runbook. |
+| `docs/SHOPIFY_CUSTOM_APP_SETUP.md` | Shopify Dev Dashboard setup details. |
 
 ## References
 
-[1]: https://shopify.dev/docs/apps/build/dev-dashboard/create-apps-using-dev-dashboard "Shopify Developer — Create apps using the Dev Dashboard"
-[2]: https://shopify.dev/docs/apps/build/dev-dashboard/get-api-access-tokens "Shopify Developer — Get API access tokens for Dev Dashboard apps"
-[3]: https://shopify.dev/docs/api/admin-graphql/latest/queries/productByIdentifier "Shopify Developer — productByIdentifier"
-[4]: https://shopify.dev/docs/api/admin-graphql/latest/mutations/productOptionUpdate "Shopify Developer — productOptionUpdate"
-[5]: https://shopify.dev/docs/api/admin-graphql/latest/queries/metaobjectByHandle "Shopify Developer — metaobjectByHandle"
+[1]: https://docs.github.com/actions/managing-workflow-runs/using-workflow-run-logs "GitHub Docs — Using workflow run logs"
+[2]: https://matrixify.app/tutorials/export-to-custom-file-name/ "Matrixify — Export to custom file name – predictable URL"
+[3]: https://docs.github.com/en/actions/tutorials/store-and-share-data "GitHub Docs — Store and share data with workflow artifacts"
+[4]: https://docs.github.com/actions/security-guides/using-secrets-in-github-actions "GitHub Docs — Using secrets in GitHub Actions"
+[5]: https://shopify.dev/docs/apps/build/dev-dashboard/create-apps-using-dev-dashboard "Shopify Developer — Create apps using the Dev Dashboard"
 [6]: https://shopify.dev/docs/api/admin-graphql/latest/input-objects/LinkedMetafieldUpdateInput "Shopify Developer — LinkedMetafieldUpdateInput"
