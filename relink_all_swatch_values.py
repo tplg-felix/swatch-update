@@ -77,9 +77,10 @@ def header_column(headers: dict[str, int], *aliases: str) -> int | None:
 
 def source_products(workbook_path: Path) -> list[dict[str, str]]:
     workbook = load_workbook(workbook_path, read_only=True, data_only=False)
-    sheet_name = "Product" if "Product" in workbook.sheetnames else "Products"
-    if sheet_name not in workbook.sheetnames:
-        raise RuntimeError("The Matrixify workbook needs a Product or Products sheet.")
+    sheet_names = {name.casefold(): name for name in workbook.sheetnames}
+    sheet_name = sheet_names.get("product") or sheet_names.get("products")
+    if not sheet_name:
+        raise RuntimeError("The Matrixify workbook needs a Product or Products sheet (case-insensitive).")
     worksheet = workbook[sheet_name]
     headers = {
         text(worksheet.cell(1, column).value): column
