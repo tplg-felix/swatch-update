@@ -38,6 +38,16 @@ query ProductOptionsForRelink($id: ID!) {
 }
 """
 
+METAOBJECT_DETAILS_QUERY = """
+query ColorPatternDetails($type: String!, $handle: String!) {
+  metaobjectByHandle(handle: {type: $type, handle: $handle}) {
+    id
+    handle
+    displayName
+  }
+}
+"""
+
 UPDATE_MUTATION = """
 mutation RelinkAllOptionValues(
   $productId: ID!,
@@ -150,6 +160,17 @@ def first_option(product: dict[str, Any]) -> dict[str, Any] | None:
     return min(options, key=lambda item: item.get("position", 9999))
 
 
+def metaobject_details(shopify: Shopify, handle: str) -> dict[str, Any] | None:
+    cache = getattr(shopify, "_relink_display_name_cache", {})
+    if handle not in cache:
+        cache[handle] = shopify.graphql(
+            METAOBJECT_DETAILS_QUERY,
+            {"type": "shopify--color-pattern", "handle": handle},
+        ).get("metaobjectByHandle")
+        setattr(shopify, "_relink_display_name_cache", cache)
+    return cache[handle]
+
+
 def outcome(source: dict[str, str], status: str, detail: str, **extra: str) -> dict[str, str]:
     return {
         "product_reference_type": source["product_reference_type"],
@@ -165,6 +186,7 @@ def outcome(source: dict[str, str], status: str, detail: str, **extra: str) -> d
         "current_option_values": extra.get("current_option_values", ""),
         "derived_handles": extra.get("derived_handles", ""),
         "missing_handles": extra.get("missing_handles", ""),
+        "duplicate_linked_display_names": extra.get("duplicate_linked_display_names", ""),
     }
 
 
@@ -233,7 +255,7 @@ def relink(source_rows: list[dict[str, str]], shopify: Shopify, execute: bool) -
         api_error = ""
         for handle in sorted(set(handles.values())):
             try:
-                metaobject = shopify.metaobject(handle)
+                metaobject = metaobject_details(shopify, handle)
             except RuntimeError as exc:
                 api_error = str(exc)
                 break
@@ -241,6 +263,17 @@ def relink(source_rows: list[dict[str, str]], shopify: Shopify, execute: bool) -
                 missing_handles.append(handle)
             else:
                 metaobjects[handle] = metaobject
+
+        display_name_handles: dict[str, list[str]] = {}
+        for handle, metaobject in metaobjects.items():
+            display_name = text(metaobject.get("displayName"))
+            if display_name:
+                display_name_handles.setdefault(display_name.casefold(), []).append(handle)
+        duplicate_display_names = [
+            f"{key}: {', '.join(sorted(handles_for_name))}"
+            for key, handles_for_name in sorted(display_name_handles.items())
+            if len(handles_for_name) > 1
+        ]
 
         details = {
             "shopify_product_id": product["id"],
@@ -250,6 +283,7 @@ def relink(source_rows: list[dict[str, str]], shopify: Shopify, execute: bool) -
             "current_option_values": "; ".join(current_values),
             "derived_handles": "; ".join(handles[value["id"]] for value in option_values),
             "missing_handles": "; ".join(missing_handles),
+            "duplicate_linked_display_names": "; ".join(duplicate_display_names),
         }
         if api_error:
             results.append(outcome(source, "ERROR", api_error, **details))
@@ -260,6 +294,16 @@ def relink(source_rows: list[dict[str, str]], shopify: Shopify, execute: bool) -
                     source,
                     "MISSING_METAOBJECT",
                     "No Shopify update sent because every existing option value must map before relinking.",
+                    **details,
+                )
+            )
+            continue
+        if duplicate_display_names:
+            results.append(
+                outcome(
+                    source,
+                    "DUPLICATE_LINKED_DISPLAY_NAME",
+                    "No Shopify update sent because different Color & pattern metaobjects have the same display name.",
                     **details,
                 )
             )
@@ -329,6 +373,7 @@ def write_report(rows: list[dict[str, str]]) -> None:
         "current_option_values",
         "derived_handles",
         "missing_handles",
+        "duplicate_linked_display_names",
     ]
     with REPORT_PATH.open("w", newline="", encoding="utf-8") as destination:
         writer = csv.DictWriter(destination, fieldnames=fields)
