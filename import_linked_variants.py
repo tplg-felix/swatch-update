@@ -356,9 +356,30 @@ def plan_group(source_rows: list[SourceRow], shopify: Shopify) -> ProductPlan:
     return ProductPlan(source_rows, product, option, metaobjects, add_metaobject_ids, update_rows, create_rows)
 
 
-def variant_input(row: SourceRow, option: dict[str, Any], metaobject_id: str, update: bool) -> dict[str, Any]:
+def option_value_ids(option: dict[str, Any]) -> dict[str, str]:
+    """Map Color & pattern metaobject IDs to Shopify product option-value IDs."""
+    return {
+        text(value.get("linkedMetafieldValue")): text(value.get("id"))
+        for value in option.get("optionValues") or []
+        if text(value.get("linkedMetafieldValue")) and text(value.get("id"))
+    }
+
+
+def required_option_value_ids(plan: ProductPlan) -> dict[str, str]:
+    mapping = option_value_ids(plan.option)
+    required = {plan.metaobjects[row.metaobject_handle]["id"] for row in plan.source_rows}
+    missing = sorted(meta_id for meta_id in required if meta_id not in mapping)
+    if missing:
+        raise RuntimeError(
+            "Shopify did not return a product option-value ID for linked metaobject IDs: "
+            + ", ".join(missing)
+        )
+    return mapping
+
+
+def variant_input(row: SourceRow, option: dict[str, Any], option_value_id: str, update: bool) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "optionValues": [{"optionId": option["id"], "linkedMetafieldValue": metaobject_id}],
+        "optionValues": [{"id": option_value_id, "optionId": option["id"]}],
     }
     if update:
         payload["id"] = gid("ProductVariant", row.variant_id)
@@ -385,13 +406,23 @@ def add_values(shopify: Shopify, plan: ProductPlan) -> None:
     errors = payload.get("userErrors") or []
     if errors:
         raise RuntimeError(str(errors))
+    updated_options = (payload.get("product") or {}).get("options") or []
+    updated_option = next((option for option in updated_options if option.get("id") == plan.option["id"]), None)
+    if not updated_option:
+        raise RuntimeError("Shopify did not return the updated first option after adding linked values.")
+    plan.option = updated_option
 
 
-def update_variants(shopify: Shopify, plan: ProductPlan) -> None:
+def update_variants(shopify: Shopify, plan: ProductPlan, value_ids: dict[str, str]) -> None:
     if not plan.update_rows:
         return
     variants = [
-        variant_input(row, plan.option, plan.metaobjects[row.metaobject_handle]["id"], update=True)
+        variant_input(
+            row,
+            plan.option,
+            value_ids[plan.metaobjects[row.metaobject_handle]["id"]],
+            update=True,
+        )
         for row in plan.update_rows
     ]
     payload = shopify.graphql(
@@ -403,11 +434,16 @@ def update_variants(shopify: Shopify, plan: ProductPlan) -> None:
         raise RuntimeError(str(errors))
 
 
-def create_variants(shopify: Shopify, plan: ProductPlan) -> None:
+def create_variants(shopify: Shopify, plan: ProductPlan, value_ids: dict[str, str]) -> None:
     if not plan.create_rows:
         return
     variants = [
-        variant_input(row, plan.option, plan.metaobjects[row.metaobject_handle]["id"], update=False)
+        variant_input(
+            row,
+            plan.option,
+            value_ids[plan.metaobjects[row.metaobject_handle]["id"]],
+            update=False,
+        )
         for row in plan.create_rows
     ]
     payload = shopify.graphql(
@@ -456,17 +492,18 @@ def execute_plan(plan: ProductPlan, shopify: Shopify, mode: str) -> list[dict[st
         ]
     try:
         add_values(shopify, plan)
+        value_ids = required_option_value_ids(plan)
     except RuntimeError as exc:
-        return [report_row(row, "ERROR", f"Adding linked option values failed: {exc}", plan) for row in plan.source_rows]
+        return [report_row(row, "ERROR", f"Resolving linked option values failed: {exc}", plan) for row in plan.source_rows]
     try:
-        update_variants(shopify, plan)
+        update_variants(shopify, plan, value_ids)
     except RuntimeError as exc:
         return [report_row(row, "ERROR", f"Updating variants failed: {exc}", plan) for row in plan.update_rows] + [
             report_row(row, "NOT_RUN", "Create step not run because the update step failed.", plan)
             for row in plan.create_rows
         ]
     try:
-        create_variants(shopify, plan)
+        create_variants(shopify, plan, value_ids)
     except RuntimeError as exc:
         return [report_row(row, "UPDATED", "Existing variant updated.", plan) for row in plan.update_rows] + [
             report_row(row, "ERROR", f"Creating variants failed: {exc}", plan) for row in plan.create_rows
