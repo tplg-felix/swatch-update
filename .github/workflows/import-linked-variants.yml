@@ -1,0 +1,67 @@
+---
+name: Import Linked Variants
+
+on:
+  workflow_dispatch:
+    inputs:
+      store:
+        description: Target Shopify store
+        required: true
+        default: jp
+        type: choice
+        options:
+          - intl
+          - hk
+          - tw
+          - jp
+          - eu
+          - us
+          - kr
+          - th
+      workbook_download_url:
+        description: Direct HTTPS download URL for the unchanged prepared source workbook
+        required: true
+        type: string
+      mode:
+        description: Validate only or apply linked variant changes
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - execute
+
+permissions:
+  contents: read
+
+jobs:
+  import-linked-variants:
+    name: ${{ inputs.mode }} — ${{ inputs.store }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r import_linked_variants_requirements.txt
+
+      - name: Validate and import linked variants
+        run: >-
+          python import_linked_variants.py
+          --store "${{ inputs.store }}"
+          --workbook-url "${{ inputs.workbook_download_url }}"
+          --mode "${{ inputs.mode }}"
+
+      - name: Upload import report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linked-variant-import-report-${{ github.run_id }}
+          path: reports/import_linked_variants_results.csv
+          if-no-files-found: warn
+          retention-days: 14
