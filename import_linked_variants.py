@@ -363,7 +363,7 @@ def variant_input(row: SourceRow, option: dict[str, Any], metaobject_id: str, up
     if update:
         payload["id"] = gid("ProductVariant", row.variant_id)
     if row.sku:
-        payload["sku"] = row.sku
+        payload["inventoryItem"] = {"sku": row.sku}
     if row.barcode:
         payload["barcode"] = row.barcode
     if row.price:
